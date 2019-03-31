@@ -2,7 +2,9 @@
 package cienv
 
 import (
+	"encoding/json"
 	"errors"
+	"io/ioutil"
 	"os"
 	"regexp"
 	"strconv"
@@ -33,7 +35,8 @@ type BuildInfo struct {
 func GetBuildInfo() (prInfo *BuildInfo, isPR bool, err error) {
 	owner, repo := getOwnerAndRepoFromSlug([]string{
 		"TRAVIS_REPO_SLUG",
-		"DRONE_REPO", // drone<=0.4
+		"DRONE_REPO",        // drone<=0.4
+		"GITHUB_REPOSITORY", // GitHub Actions
 	})
 	if owner == "" {
 		owner = getOneEnvValue([]string{
@@ -67,19 +70,29 @@ func GetBuildInfo() (prInfo *BuildInfo, isPR bool, err error) {
 		"CIRCLE_SHA1",
 		"DRONE_COMMIT",
 		"CI_COMMIT_SHA", // GitLab CI
+		"GITHUB_SHA",    // GitHub Actions
 	})
 	if sha == "" {
 		return nil, false, errors.New("cannot get commit SHA from environment variable. Set CI_COMMIT?")
 	}
 
-	branch := getOneEnvValue([]string{
-		"CI_BRANCH", // common
-		"TRAVIS_PULL_REQUEST_BRANCH",
-		"CIRCLE_BRANCH",
-		"DRONE_COMMIT_BRANCH",
-	})
+	var (
+		branch string
+		pr     int
+	)
 
-	pr := getPullRequestNum()
+	if ev, ok := getGithubActionsEvent(); ok {
+		branch, pr = ev.Head.Ref, ev.Number
+	} else {
+		branch = getOneEnvValue([]string{
+			"CI_BRANCH", // common
+			"TRAVIS_PULL_REQUEST_BRANCH",
+			"CIRCLE_BRANCH",
+			"DRONE_COMMIT_BRANCH",
+		})
+
+		pr = getPullRequestNum()
+	}
 
 	return &BuildInfo{
 		Owner:       owner,
@@ -113,6 +126,29 @@ func getPullRequestNum() int {
 		}
 	}
 	return 0
+}
+
+type githubActionEvent struct {
+	Number int `json:"number"`
+	Head   struct {
+		Ref string `json:"ref"`
+	} `json:"head"`
+}
+
+func getGithubActionsEvent() (*githubActionEvent, bool) {
+	path := os.Getenv("GITHUB_EVENT_PATH")
+	if path == "" {
+		return nil, false
+	}
+	data, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	event := new(githubActionEvent)
+	if err := json.Unmarshal(data, event); err != nil {
+		return nil, false
+	}
+	return event, true
 }
 
 func getOneEnvValue(envs []string) string {
